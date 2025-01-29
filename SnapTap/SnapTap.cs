@@ -25,10 +25,10 @@ namespace SnapTap
 
         // Track physical key states
         private static readonly HashSet<Keys> PhysicallyPressedKeys = new HashSet<Keys>();
-        
+
         // Track active keys per group
         private static readonly Dictionary<int, Keys> ActiveKeys = new Dictionary<int, Keys>();
-        
+
         // Track previous keys per group for instant switching
         private static readonly Dictionary<int, Keys> PreviousKeys = new Dictionary<int, Keys>();
 
@@ -56,7 +56,7 @@ namespace SnapTap
             InitializeComponent();
             InitializeTrayIcon();
             _hookID = SetHook(_proc);
-            
+
             this.WindowState = FormWindowState.Minimized;
             this.ShowInTaskbar = false;
             this.Hide();
@@ -68,7 +68,7 @@ namespace SnapTap
             _trayMenu.Items.Add("Enabled", null, OnToggleEnabled);
             _trayMenu.Items.Add("-"); // Separator
             _trayMenu.Items.Add("Exit", null, OnExit);
-            
+
             _trayIcon = new NotifyIcon
             {
                 Text = "SnapTap",
@@ -84,7 +84,7 @@ namespace SnapTap
         {
             _isEnabled = !_isEnabled;
             (_trayMenu.Items[0] as ToolStripMenuItem).Checked = _isEnabled;
-            
+
             if (!_isEnabled)
             {
                 // When disabling, release all virtual key states
@@ -120,7 +120,7 @@ namespace SnapTap
             {
                 UnhookWindowsHookEx(_hookID);
             }
-            
+
             _trayIcon.Visible = false;
             Application.Exit();
         }
@@ -180,56 +180,41 @@ namespace SnapTap
                 // Only handle if it's not a simulated key event
                 if ((kbStruct.flags & 0x10) == 0)
                 {
-                    // Check if this is a key we care about
                     if (KeyGroups.TryGetValue(key, out int group))
                     {
                         bool isKeyUp = wParam == (IntPtr)WM_KEYUP;
 
                         if (isKeyDown)
                         {
-                            var currentKeyInfo = PhysicallyPressedKeys;
-                            var currentGroupInfo = ActiveKeys;
-
-                            if (!currentKeyInfo.Contains(key))
+                            if (!PhysicallyPressedKeys.Contains(key))
                             {
-                                currentKeyInfo.Add(key);
+                                PhysicallyPressedKeys.Add(key);
 
-                                if (currentGroupInfo.TryGetValue(group, out Keys activeKey))
+                                if (ActiveKeys.TryGetValue(group, out Keys activeKey) && activeKey != key)
                                 {
-                                    if (activeKey != key)
-                                    {
-                                        // Store previous key
-                                        PreviousKeys[group] = activeKey;
-                                        // Release previous key
-                                        PostMessage(GetForegroundWindow(), WM_KEYUP, (IntPtr)((int)activeKey), IntPtr.Zero);
-                                    }
+                                    // Release previous key while keeping original key flow
+                                    SimulateKey(activeKey, false);
+                                    PreviousKeys[group] = activeKey;
                                 }
 
-                                // Set as active key
-                                currentGroupInfo[group] = key;
-                                // Send the key down
-                                PostMessage(GetForegroundWindow(), WM_KEYDOWN, (IntPtr)((int)key), IntPtr.Zero);
+                                ActiveKeys[group] = key;
+                                // Allow original key event to pass through
                             }
-                            return (IntPtr)1; // Block original keydown
+                            return CallNextHookEx(_hookID, nCode, wParam, lParam);
                         }
                         else if (isKeyUp)
                         {
-                            if (PhysicallyPressedKeys.Contains(key))
+                            if (PhysicallyPressedKeys.Remove(key))
                             {
-                                PhysicallyPressedKeys.Remove(key);
-
                                 if (ActiveKeys.TryGetValue(group, out Keys activeKey) && activeKey == key)
                                 {
-                                    // Send key up
-                                    PostMessage(GetForegroundWindow(), WM_KEYUP, (IntPtr)((int)key), IntPtr.Zero);
-
+                                    // Allow natural key release
                                     if (PreviousKeys.TryGetValue(group, out Keys prevKey) && 
                                         PhysicallyPressedKeys.Contains(prevKey))
                                     {
-                                        // Activate previous key
                                         ActiveKeys[group] = prevKey;
+                                        SimulateKey(prevKey, true);
                                         PreviousKeys.Remove(group);
-                                        PostMessage(GetForegroundWindow(), WM_KEYDOWN, (IntPtr)((int)prevKey), IntPtr.Zero);
                                     }
                                     else
                                     {
@@ -237,12 +222,11 @@ namespace SnapTap
                                     }
                                 }
                             }
-                            return (IntPtr)1; // Block original keyup
+                            return CallNextHookEx(_hookID, nCode, wParam, lParam);
                         }
                     }
                 }
             }
-
             return CallNextHookEx(_hookID, nCode, wParam, lParam);
         }
 
@@ -275,8 +259,8 @@ namespace SnapTap
                 ki = new KEYBDINPUT
                 {
                     wVk = (ushort)key,
-                    wScan = 0,
-                    dwFlags = keyDown ? 0u : 0x0002u,
+                    wScan = (ushort)MapVirtualKey((uint)key, 0),
+                    dwFlags = keyDown ? 0u : KEYEVENTF_KEYUP,
                     time = 0u,
                     dwExtraInfo = IntPtr.Zero
                 }
@@ -349,10 +333,10 @@ namespace SnapTap
                 StringBuilder className = new StringBuilder(256);
                 GetClassName(focusedWindow, className, className.Capacity);
                 string classNameStr = className.ToString().ToLower();
-                
+
                 // Common text input class names
-                return classNameStr.Contains("edit") || 
-                       classNameStr.Contains("text") || 
+                return classNameStr.Contains("edit") ||
+                       classNameStr.Contains("text") ||
                        classNameStr.Contains("input") ||
                        classNameStr.Contains("richedit");
             }
@@ -362,7 +346,7 @@ namespace SnapTap
         private static bool IsGameChatActive()
         {
             // Check if any of these keys are pressed (common chat activation keys)
-            bool chatKeyPressed = 
+            bool chatKeyPressed =
                 (GetAsyncKeyState((int)Keys.Enter) & 0x8000) != 0 ||
                 (GetAsyncKeyState((int)Keys.T) & 0x8000) != 0 ||
                 (GetAsyncKeyState((int)Keys.Y) & 0x8000) != 0;
